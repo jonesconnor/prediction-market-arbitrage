@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime
-from typing import Iterable, Sequence
+from typing import Dict, Iterable, Sequence
 
 from redis.asyncio import Redis
 
@@ -25,16 +26,41 @@ class RedisStore:
     def __init__(self, client: Redis, *, history_cap: int) -> None:
         self._redis = client
         self._history_cap = max(history_cap, 0)
+        self._lock = asyncio.Lock()
+        self._snapshot_cache: Dict[str, dict] | None = None
 
-    async def get_snapshot(self) -> list[dict]:
+    async def _load_snapshot_locked(self) -> Dict[str, dict]:
+        if self._snapshot_cache is not None:
+            return self._snapshot_cache
+
         data = await self._redis.get(self.snapshot_key)
         if not data:
-            return []
+            self._snapshot_cache = {}
+            return self._snapshot_cache
+
         try:
-            return json.loads(data)
+            payload = json.loads(data)
         except json.JSONDecodeError:
-            logger.warning("Failed to decode snapshot JSON; returning empty list.")
-            return []
+            logger.warning("Failed to decode snapshot JSON; clearing cache.")
+            self._snapshot_cache = {}
+            return self._snapshot_cache
+
+        cache: Dict[str, dict] = {}
+        if isinstance(payload, list):
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                market_id = item.get("marketId")
+                if market_id:
+                    cache[str(market_id)] = item
+
+        self._snapshot_cache = cache
+        return self._snapshot_cache
+
+    async def get_snapshot(self) -> list[dict]:
+        async with self._lock:
+            cache = await self._load_snapshot_locked()
+            return list(cache.values())
 
     async def get_snapshot_models(self) -> list[Opportunity]:
         snapshot = await self.get_snapshot()
@@ -48,49 +74,107 @@ class RedisStore:
 
     async def sync_opportunities(self, opportunities: Sequence[Opportunity]) -> None:
         """Persist the latest opportunity set and publish deltas."""
+        updates_to_publish: list[OpportunityUpdate] = []
+        removed_count = 0
+        payload: list[dict] = []
 
-        existing = await self.get_snapshot()
-        existing_by_id = {item.get("marketId"): item for item in existing}
-        new_by_id = {opp.market_id: opp for opp in opportunities}
+        async with self._lock:
+            cache = await self._load_snapshot_locked()
+            existing_keys = set(cache.keys())
+            new_by_id = {opp.market_id: opp for opp in opportunities}
 
-        updates: list[OpportunityUpdate] = []
+            for market_id, opportunity in new_by_id.items():
+                serialized = opportunity.serialize()
+                previous = cache.get(market_id)
+                if previous != serialized:
+                    updates_to_publish.append(
+                        OpportunityUpdate(
+                            type="upsert",
+                            market_id=market_id,
+                            opportunity=opportunity,
+                        )
+                    )
+                cache[market_id] = serialized
 
-        for market_id, opportunity in new_by_id.items():
-            serialized = opportunity.serialize()
-            previous = existing_by_id.get(market_id)
-            if previous != serialized:
-                updates.append(
+            removed_ids = existing_keys.difference(new_by_id)
+            removed_count = len(removed_ids)
+            for market_id in removed_ids:
+                cache.pop(market_id, None)
+                updates_to_publish.append(
                     OpportunityUpdate(
-                        type="upsert",
+                        type="remove",
                         market_id=market_id,
-                        opportunity=opportunity,
+                        opportunity=None,
                     )
                 )
 
-        removed_ids = set(existing_by_id).difference(new_by_id)
-        for market_id in removed_ids:
-            updates.append(
+            payload = list(cache.values())
+            await self._redis.set(self.snapshot_key, json.dumps(payload))
+
+        if updates_to_publish:
+            await self.publish_updates(updates_to_publish)
+
+        logger.info(
+            "Snapshot synchronized with %s opportunities (%s updates, %s removals)",
+            len(opportunities),
+            len(updates_to_publish),
+            removed_count,
+        )
+
+        await self._append_histories(opportunities)
+
+    async def upsert_opportunity(self, opportunity: Opportunity) -> None:
+        payload: list[dict] | None = None
+        async with self._lock:
+            cache = await self._load_snapshot_locked()
+            serialized = opportunity.serialize()
+            previous = cache.get(opportunity.market_id)
+            if previous == serialized:
+                return
+            cache[opportunity.market_id] = serialized
+            payload = list(cache.values())
+
+        if payload is None:
+            return
+
+        await self._redis.set(self.snapshot_key, json.dumps(payload))
+        await self.publish_updates(
+            [
+                OpportunityUpdate(
+                    type="upsert",
+                    market_id=opportunity.market_id,
+                    opportunity=opportunity,
+                )
+            ]
+        )
+        await self.append_history(
+            market_id=opportunity.market_id,
+            timestamp=opportunity.updated_at,
+            edge=opportunity.edge,
+        )
+
+    async def remove_opportunity(self, market_id: str) -> None:
+        payload: list[dict] | None = None
+        async with self._lock:
+            cache = await self._load_snapshot_locked()
+            if market_id not in cache:
+                return
+            cache.pop(market_id, None)
+            payload = list(cache.values())
+
+        if payload is None:
+            return
+
+        await self._redis.set(self.snapshot_key, json.dumps(payload))
+        await self.publish_updates(
+            [
                 OpportunityUpdate(
                     type="remove",
                     market_id=market_id,
                     opportunity=None,
                 )
-            )
-
-        payload = [opp.serialize() for opp in opportunities]
-        await self._redis.set(self.snapshot_key, json.dumps(payload))
-
-        if updates:
-            await self.publish_updates(updates)
-
-        logger.info(
-            "Snapshot synchronized with %s opportunities (%s updates, %s removals)",
-            len(opportunities),
-            len(updates),
-            len(removed_ids),
+            ]
         )
-
-        await self._append_histories(opportunities)
 
     async def publish_updates(self, updates: Iterable[OpportunityUpdate]) -> None:
         for update in updates:

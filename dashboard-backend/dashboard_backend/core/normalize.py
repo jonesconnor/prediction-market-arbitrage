@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any, Iterable
+import logging
+from typing import Any, Iterable, List
 
 from .models import Market, Outcome
+
+logger = logging.getLogger(__name__)
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -43,38 +46,49 @@ def _build_url(raw: dict[str, Any], market_id: str) -> str:
     return f"https://polymarket.com/event/{market_id}"
 
 
+def _as_list(value: Any) -> List[Any]:
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                return parsed
+            return list(parsed) if isinstance(parsed, Iterable) else []
+        except json.JSONDecodeError:
+            return []
+    if isinstance(value, Iterable):
+        return list(value)
+    return []
+
+
 def _parse_outcomes(raw: dict[str, Any]) -> list[Outcome]:
     names_raw = raw.get("outcomes") or raw.get("contracts")
     prices_raw = raw.get("outcomePrices") or raw.get("prices")
+    tokens_raw = (
+        raw.get("outcomeTokenIds")
+        or raw.get("outcomeTokenIDs")
+        or raw.get("outcomeTokens")
+        or raw.get("tokens")
+        or raw.get("assetIds")
+    )
 
-    names: Iterable[Any]
-    prices: Iterable[Any]
-
-    if isinstance(names_raw, str):
-        try:
-            names = json.loads(names_raw)
-        except json.JSONDecodeError:
-            names = []
-    elif isinstance(names_raw, Iterable):
-        names = names_raw
-    else:
-        names = []
-
-    if isinstance(prices_raw, str):
-        try:
-            prices = json.loads(prices_raw)
-        except json.JSONDecodeError:
-            prices = []
-    elif isinstance(prices_raw, Iterable):
-        prices = prices_raw
-    else:
-        prices = []
+    names = _as_list(names_raw)
+    prices = _as_list(prices_raw)
+    tokens = _as_list(tokens_raw)
 
     outcomes: list[Outcome] = []
-    for name, price in zip(names, prices):
+    for index, name in enumerate(names):
         if not name:
             continue
-        outcomes.append(Outcome(name=str(name), price=_to_float(price)))
+        price_value = prices[index] if index < len(prices) else None
+        token_value = tokens[index] if index < len(tokens) else None
+        token_id = str(token_value) if token_value not in {None, ""} else None
+        outcomes.append(
+            Outcome(
+                name=str(name),
+                price=_to_float(price_value),
+                token_id=token_id,
+            )
+        )
 
     return outcomes
 
@@ -91,6 +105,14 @@ def normalize_market(raw: dict[str, Any]) -> Market | None:
         return None
 
     outcomes = _parse_outcomes(raw)
+
+    if not outcomes:
+        logger.debug('Skipping market %s due to missing outcomes', market_id)
+        return None
+
+    missing_tokens = [outcome.name for outcome in outcomes if not outcome.token_id]
+    if missing_tokens:
+        logger.debug('Market %s missing token ids for outcomes: %s', market_id, missing_tokens)
 
     if not outcomes:
         return None
@@ -111,7 +133,14 @@ def normalize_market(raw: dict[str, Any]) -> Market | None:
         or 0.0
     )
 
-    return Market(
+    condition_id = (
+        raw.get("conditionId")
+        or raw.get("condition_id")
+        or raw.get("marketHash")
+        or raw.get("market_hash")
+    )
+
+    market_model = Market(
         id=str(market_id),
         question=question,
         url=_build_url(raw, str(market_id)),
@@ -120,4 +149,7 @@ def normalize_market(raw: dict[str, Any]) -> Market | None:
         category=category,
         close_time=close_time,
         liquidity=liquidity if liquidity > 0 else None,
+        condition_id=str(condition_id) if condition_id else None,
     )
+
+    return market_model

@@ -11,6 +11,11 @@ class Outcome(BaseModel):
 
     name: str
     price: float
+    token_id: str | None = Field(default=None, alias="tokenId")
+    best_bid: float | None = Field(default=None, alias="bestBid")
+    best_ask: float | None = Field(default=None, alias="bestAsk")
+    best_bid_size: float | None = Field(default=None, alias="bestBidSize")
+    best_ask_size: float | None = Field(default=None, alias="bestAskSize")
 
 
 class Market(BaseModel):
@@ -26,6 +31,7 @@ class Market(BaseModel):
     category: str | None = None
     close_time: datetime | None = Field(default=None, alias="closeTime")
     liquidity: float | None = None
+    condition_id: str | None = Field(default=None, alias="conditionId")
 
 
 class Opportunity(BaseModel):

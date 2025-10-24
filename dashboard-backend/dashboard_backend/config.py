@@ -18,9 +18,14 @@ class Settings(BaseSettings):
         description="Base URL for the Polymarket Gamma markets REST API.",
     )
     clob_ws: str = Field(
-        default="wss://clob.polymarket.com/ws",
+        default="wss://ws-subscriptions-clob.polymarket.com/ws/market",
         alias="PM_CLOB_WS",
         description="WebSocket endpoint for the Polymarket CLOB (reserved for future use).",
+    )
+    clob_host: str = Field(
+        default="https://clob.polymarket.com",
+        alias="PM_CLOB_HOST",
+        description="Base HTTP host for the Polymarket CLOB REST API.",
     )
     min_edge: float = Field(
         default=0.01,
@@ -62,6 +67,32 @@ class Settings(BaseSettings):
         alias="CORS_ALLOW_ORIGINS",
         description="Comma-separated list of origins allowed for CORS (use '*' for all).",
     )
+    enable_ws_ingest: bool = Field(
+        default=True,
+        alias="ENABLE_WS_INGEST",
+        description="Toggle for subscribing to the Polymarket market websocket feed.",
+    )
+    ws_ping_interval: float = Field(
+        default=10.0,
+        alias="WS_PING_INTERVAL",
+        description="Seconds between websocket ping messages.",
+    )
+    ws_subscribe_chunk_size: int = Field(
+        default=200,
+        alias="WS_SUBSCRIBE_CHUNK_SIZE",
+        description="Number of asset ids to include per subscription payload.",
+    )
+    ws_reconnect_backoff: float = Field(
+        default=5.0,
+        alias="WS_RECONNECT_BACKOFF",
+        description="Initial backoff seconds before attempting websocket reconnects.",
+    )
+    ws_verify_ssl: bool = Field(
+        default=True,
+        alias="WS_VERIFY_SSL",
+        description="Whether to verify SSL certificates when connecting to the Polymarket market websocket.",
+    )
+
 
 
 @lru_cache()

@@ -77,6 +77,71 @@ async def get_history(
     return history
 
 
+@router.get("/v1/cross-opportunities")
+async def get_cross_opportunities(
+    market_id: str | None = Query(default=None),
+    limit: int = Query(default=10, ge=1, le=50),
+    store: RedisStore = Depends(get_store),
+) -> list[dict[str, object]]:
+    matches = await store.get_cross_matches(market_id=market_id)
+    if not matches:
+        return []
+
+    catalog = await store.get_market_catalog()
+    catalog_map = {doc.market_id: doc for doc in catalog}
+
+    response: list[dict[str, object]] = []
+
+    for base_id, entries in matches.items():
+        base_doc = catalog_map.get(base_id)
+        if base_doc is None:
+            continue
+
+        base_payload = {
+            "baseMarketId": base_id,
+            "baseQuestion": base_doc.question,
+            "baseCategory": base_doc.category,
+            "baseCloseTime": base_doc.close_time.isoformat() if base_doc.close_time else None,
+            "baseUrl": base_doc.metadata.get("url"),
+        }
+
+        processed: list[dict[str, object]] = []
+        for entry in entries[:limit]:
+            candidate_id = entry.get("marketId")
+            if not candidate_id:
+                continue
+            candidate_doc = catalog_map.get(candidate_id)
+            processed.append(
+                {
+                    "marketId": candidate_id,
+                    "question": entry.get("question")
+                    or (candidate_doc.question if candidate_doc else ""),
+                    "similarity": entry.get("similarity"),
+                    "category": entry.get("category")
+                    or (candidate_doc.category if candidate_doc else None),
+                    "closeTime": entry.get("closeTime")
+                    or (
+                        candidate_doc.close_time.isoformat()
+                        if candidate_doc and candidate_doc.close_time
+                        else None
+                    ),
+                    "url": entry.get("url")
+                    or (
+                        candidate_doc.metadata.get("url")
+                        if candidate_doc and candidate_doc.metadata
+                        else None
+                    ),
+                    "timestamp": entry.get("timestamp"),
+                }
+            )
+
+        if processed:
+            processed.sort(key=lambda item: item.get("similarity") or 0, reverse=True)
+            response.append({**base_payload, "matches": processed})
+
+    return response
+
+
 @router.get("/v1/stream")
 async def stream_updates(
     request: Request,

@@ -33,6 +33,42 @@ export type EdgeHistoryPoint = {
   updatedAt: string
 }
 
+export type CrossMatchCandidate = {
+  marketId: string
+  question: string
+  similarity: number
+  category?: string | null
+  closeTime?: string | null
+  url?: string | null
+  timestamp: string
+}
+
+export type CrossMatchGroup = {
+  baseMarketId: string
+  baseQuestion: string
+  baseCategory?: string | null
+  baseCloseTime?: string | null
+  baseUrl?: string | null
+  matches: CrossMatchCandidate[]
+}
+
+export type CrossMatchRow = {
+  baseMarketId: string
+  baseQuestion: string
+  baseCategory?: string | null
+  baseCloseTime?: string | null
+  baseUrl?: string | null
+  candidate: CrossMatchCandidate
+}
+
+export type CrossMatchMetrics = {
+  totalPairs: number
+  uniqueBases: number
+  avgSimilarity: number
+  topSimilarity: number
+  topCategory: string | null
+}
+
 export type FilterState = {
   minEdge: number
   maxEdge: number

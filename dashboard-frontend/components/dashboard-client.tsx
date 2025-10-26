@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import { useOpportunities } from "@/hooks/use-opportunities"
+import { useCrossOpportunities } from "@/hooks/use-cross-opportunities"
 import { useSSE } from "@/hooks/use-sse"
 import { getSSEUrl } from "@/lib/api"
 import type { Opportunity } from "@/lib/types"
@@ -11,6 +12,7 @@ import { FiltersBar } from "./filters-bar"
 import { OpportunitiesTable } from "./opportunities-table"
 import { EdgeDistribution } from "./edge-distribution"
 import { MarketDetailDrawer } from "./market-detail-drawer"
+import { CrossOpportunitiesSection } from "./cross-opportunities-section"
 
 type DashboardClientProps = {
   initialData: Opportunity[]
@@ -20,6 +22,13 @@ export function DashboardClient({ initialData }: DashboardClientProps) {
   const { opportunities, filters, setFilters, stats, handleSSEMessage } = useOpportunities(initialData)
   const connectionStatus = useSSE(getSSEUrl(), handleSSEMessage)
   const [selectedMarketId, setSelectedMarketId] = useState<string | null>(null)
+  const {
+    rows: crossRows,
+    metrics: crossMetrics,
+    isLoading: crossLoading,
+    error: crossError,
+    refresh: refreshCross,
+  } = useCrossOpportunities(20)
 
   const selectedOpportunity = opportunities.find((o) => o.marketId === selectedMarketId) || null
 
@@ -55,6 +64,14 @@ export function DashboardClient({ initialData }: DashboardClientProps) {
             <EdgeDistribution opportunities={opportunities} />
           </div>
         </div>
+
+        <CrossOpportunitiesSection
+          rows={crossRows}
+          metrics={crossMetrics}
+          isLoading={crossLoading}
+          error={crossError}
+          onRefresh={refreshCross}
+        />
       </main>
 
       <MarketDetailDrawer

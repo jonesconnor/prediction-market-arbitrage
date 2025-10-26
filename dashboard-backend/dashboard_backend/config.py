@@ -1,4 +1,6 @@
 from functools import lru_cache
+from typing import Optional
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -91,6 +93,42 @@ class Settings(BaseSettings):
         default=True,
         alias="WS_VERIFY_SSL",
         description="Whether to verify SSL certificates when connecting to the Polymarket market websocket.",
+    )
+
+    embedding_model: str = Field(
+        default='text-embedding-3-small',
+        alias='EMBEDDING_MODEL',
+        description='OpenAI embedding model identifier for market similarity.',
+    )
+    embedding_batch_size: int = Field(
+        default=32,
+        alias='EMBEDDING_BATCH_SIZE',
+        description='Number of markets to embed per batch request.',
+    )
+    embedding_refresh_sec: int = Field(
+        default=900,
+        alias='EMBEDDING_REFRESH_SEC',
+        description='Seconds between embedding refresh cycles for the worker.',
+    )
+    embedding_batch_sleep_sec: float = Field(
+        default=0.0,
+        alias='EMBEDDING_BATCH_SLEEP_SEC',
+        description='Seconds to sleep between embedding batches to avoid rate limits.',
+    )
+    similarity_threshold: float = Field(
+        default=0.75,
+        alias='SIMILARITY_THRESHOLD',
+        description='Minimum cosine similarity to consider a cross-market match candidate.',
+    )
+    max_matches_per_market: int = Field(
+        default=10,
+        alias='MAX_MATCHES_PER_MARKET',
+        description='Maximum number of cross-market matches stored per market.',
+    )
+    openai_api_key: Optional[str] = Field(
+        default=None,
+        alias='OPENAI_API_KEY',
+        description='API key for OpenAI embeddings.',
     )
 
 

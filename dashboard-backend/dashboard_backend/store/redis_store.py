@@ -8,6 +8,7 @@ from typing import Dict, Iterable, Sequence
 
 from redis.asyncio import Redis
 
+from ..core.documents import MarketDocument, MarketEmbedding
 from ..core.models import Opportunity, OpportunityUpdate
 
 logger = logging.getLogger(__name__)
@@ -22,12 +23,17 @@ class RedisStore:
 
     snapshot_key = "ops:snapshot"
     updates_channel = "ops:updates"
+    catalog_key = "markets:catalog"
+    embeddings_key = "markets:embeddings"
+    matches_key = "markets:cross_matches"
 
     def __init__(self, client: Redis, *, history_cap: int) -> None:
         self._redis = client
         self._history_cap = max(history_cap, 0)
         self._lock = asyncio.Lock()
         self._snapshot_cache: Dict[str, dict] | None = None
+        self._catalog_cache: Dict[str, dict] | None = None
+        self._embedding_cache: Dict[str, dict] | None = None
 
     async def _load_snapshot_locked(self) -> Dict[str, dict]:
         if self._snapshot_cache is not None:
@@ -176,7 +182,134 @@ class RedisStore:
             ]
         )
 
+    async def _load_catalog_locked(self) -> Dict[str, dict]:
+        if self._catalog_cache is not None:
+            return self._catalog_cache
+
+        entries = await self._redis.hgetall(self.catalog_key)
+        catalog: Dict[str, dict] = {}
+        for key, value in (entries or {}).items():
+            market_id = key.decode('utf-8') if isinstance(key, bytes) else str(key)
+            try:
+                payload = json.loads(value) if isinstance(value, (bytes, str)) else None
+            except json.JSONDecodeError:
+                logger.warning('Failed to decode catalog entry for %s', market_id)
+                continue
+            if isinstance(payload, dict):
+                catalog[market_id] = payload
+        self._catalog_cache = catalog
+        return self._catalog_cache
+
+    async def get_market_catalog(self) -> list[MarketDocument]:
+        async with self._lock:
+            catalog = await self._load_catalog_locked()
+            documents: list[MarketDocument] = []
+            for payload in catalog.values():
+                try:
+                    documents.append(MarketDocument.model_validate(payload))
+                except Exception:
+                    logger.exception('Failed to parse market document', extra={'payload': payload})
+            return documents
+
+    async def sync_market_catalog(self, markets: Iterable[MarketDocument]) -> None:
+        payloads: dict[str, dict] = {}
+        serialized: dict[str, str] = {}
+        new_ids: set[str] = set()
+        for market in markets:
+            document_dict = market.model_dump(by_alias=True, mode="json")
+            new_ids.add(market.market_id)
+            payloads[market.market_id] = document_dict
+            serialized[market.market_id] = json.dumps(document_dict)
+
+        async with self._lock:
+            existing = await self._redis.hkeys(self.catalog_key)
+            existing_ids = {key.decode('utf-8') if isinstance(key, bytes) else str(key) for key in existing}
+            stale = existing_ids - new_ids
+            pipeline = self._redis.pipeline()
+            if stale:
+                pipeline.hdel(self.catalog_key, *stale)
+            if serialized:
+                pipeline.hset(self.catalog_key, mapping=serialized)
+            await pipeline.execute()
+            self._catalog_cache = payloads if payloads else {}
+
+        logger.debug(
+            "Market catalog synchronized (%s markets, %s stale removed)",
+            len(payloads),
+            len(stale),
+        )
+
+    async def _load_embeddings_locked(self) -> Dict[str, dict]:
+        if self._embedding_cache is not None:
+            return self._embedding_cache
+
+        entries = await self._redis.hgetall(self.embeddings_key)
+        embeddings: Dict[str, dict] = {}
+        for key, value in (entries or {}).items():
+            market_id = key.decode("utf-8") if isinstance(key, bytes) else str(key)
+            try:
+                payload = json.loads(value) if isinstance(value, (bytes, str)) else None
+            except json.JSONDecodeError:
+                logger.warning("Failed to decode embedding entry for %s", market_id)
+                continue
+            if isinstance(payload, dict):
+                embeddings[market_id] = payload
+        self._embedding_cache = embeddings
+        return self._embedding_cache
+
+    async def get_market_embeddings(self) -> dict[str, MarketEmbedding]:
+        async with self._lock:
+            payloads = await self._load_embeddings_locked()
+            results: dict[str, MarketEmbedding] = {}
+            for market_id, payload in payloads.items():
+                try:
+                    results[market_id] = MarketEmbedding.model_validate(payload)
+                except Exception:
+                    logger.exception(
+                        "Failed to parse market embedding", extra={"payload": payload}
+                    )
+            return results
+
+    async def store_market_embedding(self, embedding: MarketEmbedding) -> None:
+        document_dict = embedding.model_dump(by_alias=True, mode="json")
+        payload = json.dumps(document_dict)
+        async with self._lock:
+            await self._redis.hset(self.embeddings_key, embedding.market_id, payload)
+            if self._embedding_cache is None:
+                self._embedding_cache = {}
+            self._embedding_cache[embedding.market_id] = document_dict
+
+    async def set_cross_matches(self, matches: dict[str, list[dict]]) -> None:
+        serialized = {
+            market_id: json.dumps(entries, default=str)
+            for market_id, entries in matches.items()
+        }
+        if not serialized:
+            return
+        await self._redis.hset(self.matches_key, mapping=serialized)
+
+    async def get_cross_matches(self, market_id: str | None = None) -> dict[str, list[dict]]:
+        if market_id:
+            raw = await self._redis.hget(self.matches_key, market_id)
+            if not raw:
+                return {}
+            try:
+                return {market_id: json.loads(raw)}
+            except json.JSONDecodeError:
+                logger.warning("Malformed match payload for %s", market_id)
+                return {}
+        entries = await self._redis.hgetall(self.matches_key)
+        results: dict[str, list[dict]] = {}
+        for key, value in (entries or {}).items():
+            market = key if isinstance(key, str) else key.decode("utf-8")
+            try:
+                results[market] = json.loads(value)
+            except json.JSONDecodeError:
+                logger.warning("Malformed match payload for %s", market)
+        return results
+
     async def publish_updates(self, updates: Iterable[OpportunityUpdate]) -> None:
+
         for update in updates:
             message = json.dumps(update.serialize())
             await self._redis.publish(self.updates_channel, message)

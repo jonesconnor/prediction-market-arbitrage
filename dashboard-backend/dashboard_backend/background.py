@@ -4,6 +4,7 @@ import asyncio
 import logging
 from typing import List
 
+from .core.documents import MarketDocument
 from .core.edge import compute_opportunities
 from .core.models import Market
 from .core.normalize import normalize_market
@@ -75,6 +76,31 @@ class GammaPoller:
                 markets.append(normalized)
 
         logger.info("Normalized %s markets", len(markets))
+
+        catalog_documents: list[MarketDocument] = []
+        for market in markets:
+            metadata = {
+                "url": market.url,
+                "numOutcomes": len(market.outcomes),
+                "tokenIds": [outcome.token_id for outcome in market.outcomes if outcome.token_id],
+            }
+            catalog_documents.append(
+                MarketDocument(
+                    marketId=market.id,
+                    conditionId=market.condition_id,
+                    question=market.question,
+                    outcomes=[outcome.name for outcome in market.outcomes],
+                    closeTime=market.close_time,
+                    category=market.category,
+                    liquidity=market.liquidity,
+                    metadata=metadata,
+                )
+            )
+
+        try:
+            await self._store.sync_market_catalog(catalog_documents)
+        except Exception:
+            logger.exception("Failed to sync market catalog to Redis")
 
         if self._clob_client is not None:
             condition_ids = {market.condition_id for market in markets if market.condition_id}

@@ -1,4 +1,4 @@
-import type { Opportunity, EdgeHistoryPoint } from "./types"
+import type { Opportunity, EdgeHistoryPoint, CrossMatchGroup } from "./types"
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
 
@@ -26,4 +26,16 @@ export async function getMarketHistory(marketId: string, limit = 100): Promise<E
 
 export function getSSEUrl(): string {
   return `${API_URL}/v1/stream`
+}
+
+export async function getCrossOpportunities(limit = 10): Promise<CrossMatchGroup[]> {
+  const res = await fetch(`${API_URL}/v1/cross-opportunities?limit=${limit}`, {
+    cache: "no-store",
+  })
+
+  if (!res.ok) {
+    throw new Error("Failed to fetch cross-market opportunities")
+  }
+
+  return res.json()
 }

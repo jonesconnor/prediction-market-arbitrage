@@ -1,3 +1,5 @@
+import { formatDistanceStrict } from "date-fns"
+
 import type { Opportunity, OpportunityWithProfits } from "../types"
 
 export function calculateProfits(opp: Opportunity): OpportunityWithProfits {
@@ -25,6 +27,11 @@ export function formatPercent(value: number): string {
   return `${(value * 100).toFixed(2)}%`
 }
 
+export function formatSimilarity(value: number | undefined | null): string {
+  if (value === null || value === undefined) return "--"
+  return `${(value * 100).toFixed(1)}%`
+}
+
 export function formatTimeToClose(closeTime: string | null | undefined): string {
   if (!closeTime) return "No close date"
 
@@ -48,4 +55,21 @@ export function normalizeCategory(category: string | undefined): string {
     .toLowerCase()
     .replace(/-/g, " ")
     .replace(/\b\w/g, (l) => l.toUpperCase())
+}
+
+export function formatCloseDifference(
+  baseCloseTime?: string | null,
+  candidateCloseTime?: string | null,
+): string {
+  if (!baseCloseTime || !candidateCloseTime) {
+    return "--"
+  }
+
+  try {
+    const base = new Date(baseCloseTime)
+    const candidate = new Date(candidateCloseTime)
+    return formatDistanceStrict(base, candidate, { addSuffix: false })
+  } catch {
+    return "--"
+  }
 }
